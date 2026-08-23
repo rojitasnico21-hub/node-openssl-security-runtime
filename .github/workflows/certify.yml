@@ -1,0 +1,177 @@
+name: Patched Node Runtime Certification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.23.2
+  NODE_SOURCE_SHA256: bbe768df8d5815d7fa76124052985332452e0a4742d39f32027550d1aab8f6fb
+  OPENSSL_BASIS: 3.5.7
+  OPENSSL_SOURCE_SHA256: d71a811bfbd9153d7b30cbe476263302ee4b04a9a47ffea6e6a782326805c93f
+  OPENSSL_FIX_COMMIT: 08e7756c3900bcfd77a720e7b74e27d6e4ed01a9
+  ADAPTED_PATCH_SHA256: b23805accae194a81fb43f07c1fbac8fdb13a4d267ef7e687bfb800241581d01
+  TEXT_TEMPLATE_DEB_SHA256: b418681a0c0a925e029851e504c3bee5720bdcd6687c131555fd84bdb24001d6
+  TEXT_TEMPLATE_DEB_URL: https://deb.debian.org/debian/pool/main/libt/libtext-template-perl/libtext-template-perl_1.61-1_all.deb
+  NASM_VERSION: 2.16.01-1
+  NASM_AMD64_SHA256: 0180693ad5d2da8b36e7d73b9b596dc3e9f900238e3de699976c0576875b878f
+  NASM_ARM64_SHA256: 291e7bd6c76358bc44f0a5b5dae2320f3d63f6a1da004d70b3f024de5f5fa493
+  NODE_BUILD_BASE: node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a
+
+jobs:
+  generator-smoke:
+    name: generator-smoke-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      - name: Fetch and verify public inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/inputs"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/node.tar.xz" \
+            "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz"
+          printf '%s  %s\n' "$NODE_SOURCE_SHA256" "$RUNNER_TEMP/inputs/node.tar.xz" | sha256sum -c -
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/openssl.tar.gz" \
+            "https://codeload.github.com/openssl/openssl/tar.gz/refs/tags/openssl-$OPENSSL_BASIS"
+          printf '%s  %s\n' "$OPENSSL_SOURCE_SHA256" "$RUNNER_TEMP/inputs/openssl.tar.gz" | sha256sum -c -
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/libtext-template-perl_1.61-1_all.deb" "$TEXT_TEMPLATE_DEB_URL"
+          printf '%s  %s\n' "$TEXT_TEMPLATE_DEB_SHA256" "$RUNNER_TEMP/inputs/libtext-template-perl_1.61-1_all.deb" | sha256sum -c -
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/nasm.deb" \
+            "https://deb.debian.org/debian/pool/main/n/nasm/nasm_${NASM_VERSION}_amd64.deb"
+          printf '%s  %s\n' "$NASM_AMD64_SHA256" "$RUNNER_TEMP/inputs/nasm.deb" | sha256sum -c -
+      - name: Build pinned builder and run canonical header generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/builder-context"
+          mkdir -p "$context" "$RUNNER_TEMP/nasm"
+          cp Dockerfile.builder "$context/"
+          cp "$RUNNER_TEMP/inputs/libtext-template-perl_1.61-1_all.deb" "$context/"
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg NODE_BUILD_BASE="$NODE_BUILD_BASE" \
+            --build-arg TEXT_TEMPLATE_DEB_SHA256="$TEXT_TEMPLATE_DEB_SHA256" \
+            --tag public/patched-node-builder:amd64 "$context"
+          dpkg-deb -x "$RUNNER_TEMP/inputs/nasm.deb" "$RUNNER_TEMP/nasm"
+          mkdir -p "$RUNNER_TEMP/headers"
+          docker run --rm --network none --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$RUNNER_TEMP/inputs:/inputs:ro" \
+            -v "$RUNNER_TEMP/nasm:/opt/nasm:ro" \
+            -v "$RUNNER_TEMP/headers:/out" \
+            public/patched-node-builder:amd64 bash -ceu '
+              export PATH=/opt/nasm/usr/bin:$PATH
+              bash /src/scripts/build-node.sh --headers-only amd64 \
+                /inputs/node.tar.xz /inputs/openssl.tar.gz \
+                /src/patches/openssl-CVE-2026-14456-node-22.23.2.patch /out
+            '
+          grep -R -F '#define SSL_VALUE_QUIC_MAX_PENDING_CONNS 16' "$RUNNER_TEMP/headers"
+
+  build:
+    name: build-${{ matrix.arch }}
+    needs: generator-smoke
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            nasm_sha: 0180693ad5d2da8b36e7d73b9b596dc3e9f900238e3de699976c0576875b878f
+            nasm_arch: amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            nasm_sha: 291e7bd6c76358bc44f0a5b5dae2320f3d63f6a1da004d70b3f024de5f5fa493
+            nasm_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      - name: Fetch and verify public inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/inputs"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/node.tar.xz" \
+            "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz"
+          printf '%s  %s\n' "$NODE_SOURCE_SHA256" "$RUNNER_TEMP/inputs/node.tar.xz" | sha256sum -c -
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/openssl.tar.gz" \
+            "https://codeload.github.com/openssl/openssl/tar.gz/refs/tags/openssl-$OPENSSL_BASIS"
+          printf '%s  %s\n' "$OPENSSL_SOURCE_SHA256" "$RUNNER_TEMP/inputs/openssl.tar.gz" | sha256sum -c -
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/libtext-template-perl_1.61-1_all.deb" "$TEXT_TEMPLATE_DEB_URL"
+          printf '%s  %s\n' "$TEXT_TEMPLATE_DEB_SHA256" "$RUNNER_TEMP/inputs/libtext-template-perl_1.61-1_all.deb" | sha256sum -c -
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 2 \
+            --output "$RUNNER_TEMP/inputs/nasm.deb" \
+            "https://deb.debian.org/debian/pool/main/n/nasm/nasm_${NASM_VERSION}_${{ matrix.nasm_arch }}.deb"
+          printf '%s  %s\n' "${{ matrix.nasm_sha }}" "$RUNNER_TEMP/inputs/nasm.deb" | sha256sum -c -
+      - name: Build pinned builder and patched runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/builder-context"
+          mkdir -p "$context" "$RUNNER_TEMP/nasm"
+          cp Dockerfile.builder "$context/"
+          cp "$RUNNER_TEMP/inputs/libtext-template-perl_1.61-1_all.deb" "$context/"
+          docker buildx build --platform "linux/${{ matrix.arch }}" --load \
+            --build-arg NODE_BUILD_BASE="$NODE_BUILD_BASE" \
+            --build-arg TEXT_TEMPLATE_DEB_SHA256="$TEXT_TEMPLATE_DEB_SHA256" \
+            --tag "public/patched-node-builder:${{ matrix.arch }}" "$context"
+          dpkg-deb -x "$RUNNER_TEMP/inputs/nasm.deb" "$RUNNER_TEMP/nasm"
+          mkdir -p "$RUNNER_TEMP/runtime"
+          docker run --rm --network none --platform "linux/${{ matrix.arch }}" \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$RUNNER_TEMP/inputs:/inputs:ro" \
+            -v "$RUNNER_TEMP/nasm:/opt/nasm:ro" \
+            -v "$RUNNER_TEMP/runtime:/out" \
+            "public/patched-node-builder:${{ matrix.arch }}" bash -ceu '
+              export PATH=/opt/nasm/usr/bin:$PATH
+              bash /src/scripts/build-node.sh ${{ matrix.arch }} \
+                /inputs/node.tar.xz /inputs/openssl.tar.gz \
+                /src/patches/openssl-CVE-2026-14456-node-22.23.2.patch /out
+            '
+          bash scripts/verify-runtime.sh "$RUNNER_TEMP/runtime"
+      - name: Generate CycloneDX runtime SBOM
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/runtime
+          format: cyclonedx
+          output: ${{ runner.temp }}/runtime.sbom.cdx.json
+          scanners: vuln,secret
+          exit-code: "0"
+      - name: Enforce HIGH and CRITICAL runtime gate
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/runtime
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+      - name: Upload local certification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: patched-node-runtime-${{ matrix.arch }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/runtime
+            ${{ runner.temp }}/runtime.sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 14

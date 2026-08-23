@@ -1,0 +1,56 @@
+{
+  "builder": "patched-node-runtime",
+  "node": {
+    "version": "22.23.2",
+    "sourceTagCommit": "aa4c77582be995286fc6e00aaf530dc7ade102a9",
+    "sourceSha256": "bbe768df8d5815d7fa76124052985332452e0a4742d39f32027550d1aab8f6fb",
+    "sourceUrl": "https://nodejs.org/dist/v22.23.2/node-v22.23.2.tar.xz"
+  },
+  "openssl": {
+    "basis": "3.5.7",
+    "sourceSha256": "d71a811bfbd9153d7b30cbe476263302ee4b04a9a47ffea6e6a782326805c93f",
+    "sourceUrl": "https://codeload.github.com/openssl/openssl/tar.gz/refs/tags/openssl-3.5.7",
+    "fixCommit": "08e7756c3900bcfd77a720e7b74e27d6e4ed01a9",
+    "officialPatchSha256": "3b4f3ff1e9d26ca3dd75f6d98cc5d30c7dbfc03892e4bc0037a7e14bec8c5087",
+    "adaptedPatchSha256": "b23805accae194a81fb43f07c1fbac8fdb13a4d267ef7e687bfb800241581d01",
+    "adaptationRemovedPath": "doc/man3/SSL_get_value_uint.pod"
+  },
+  "dependencies": {
+    "textTemplate": {
+      "package": "libtext-template-perl",
+      "version": "1.61-1",
+      "architecture": "all",
+      "sha256": "b418681a0c0a925e029851e504c3bee5720bdcd6687c131555fd84bdb24001d6",
+      "url": "https://deb.debian.org/debian/pool/main/libt/libtext-template-perl/libtext-template-perl_1.61-1_all.deb"
+    },
+    "nasm": {
+      "version": "2.16.01-1",
+      "amd64": {
+        "package": "nasm_2.16.01-1_amd64.deb",
+        "sha256": "0180693ad5d2da8b36e7d73b9b596dc3e9f900238e3de699976c0576875b878f"
+      },
+      "arm64": {
+        "package": "nasm_2.16.01-1_arm64.deb",
+        "sha256": "291e7bd6c76358bc44f0a5b5dae2320f3d63f6a1da004d70b3f024de5f5fa493"
+      },
+      "urlBase": "https://deb.debian.org/debian/pool/main/n/nasm/"
+    }
+  },
+  "builderBase": {
+    "image": "node:22.23.2-bookworm",
+    "digest": "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
+  },
+  "runners": {
+    "amd64": "ubuntu-24.04",
+    "arm64": "ubuntu-24.04-arm"
+  },
+  "trivy": {
+    "version": "0.74.0",
+    "severity": [
+      "HIGH",
+      "CRITICAL"
+    ],
+    "exitCode": 1,
+    "ignoreUnfixed": false
+  }
+}

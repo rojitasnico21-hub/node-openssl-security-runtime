@@ -108,7 +108,7 @@ jobs:
             -v "$RUNNER_TEMP/nasm:/opt/nasm:ro" -v "$RUNNER_TEMP/headers:/out" \
             "public/patched-node-builder:${{ matrix.arch }}" bash -ceu '
               export PATH=/opt/nasm/usr/bin:$PATH
-              perl -MText::Template -e "print qq(Text::Template=$Text::Template::VERSION\\n)"
+              perl -MText::Template -e 1
               bash /src/scripts/build-node.sh --headers-only ${{ matrix.arch }} \
                 /inputs/node.tar.xz /inputs/openssl.tar.gz /inputs/official.patch \
                 /src/patches/openssl-CVE-2026-14456-node-22.23.2.patch /out
@@ -194,7 +194,7 @@ jobs:
             -v "$RUNNER_TEMP/nasm:/opt/nasm:ro" -v "$RUNNER_TEMP/runtime:/out" \
             "public/patched-node-builder:${{ matrix.arch }}" bash -ceu '
               export PATH=/opt/nasm/usr/bin:$PATH
-              perl -MText::Template -e "print qq(Text::Template=$Text::Template::VERSION\\n)"
+              perl -MText::Template -e 1
               bash /src/scripts/build-node.sh ${{ matrix.arch }} /inputs/node.tar.xz \
                 /inputs/openssl.tar.gz /inputs/official.patch \
                 /src/patches/openssl-CVE-2026-14456-node-22.23.2.patch /out

@@ -7,6 +7,7 @@ umask 022
 arch="$1"
 manifest="$2"
 docker_config="$3"
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 case "$arch" in
   amd64) asset_arch=amd64 ;;
   arm64) asset_arch=arm64 ;;
@@ -14,7 +15,7 @@ case "$arch" in
 esac
 
 read_manifest() {
-  node -e 'const m=require(process.argv[1]); const key=process.argv[2].split("."); let v=m; for(const k of key)v=v[k]; if(typeof v!=="string"||!v)process.exit(1); process.stdout.write(v)' "$manifest" "$1"
+  node "$script_root/scripts/read-manifest-value.mjs" "$manifest" "$1"
 }
 version="$(read_manifest toolchain.buildx.version)"
 expected="$(read_manifest "toolchain.buildx.${arch}Sha256")"

@@ -36,13 +36,13 @@ done
 [[ -f "$manifest" && -f "$official_patch" && -f "$adapted_patch" ]] || { echo "manifest or patch input is absent" >&2; exit 1; }
 
 read_manifest() {
-  node -e 'const m=require(process.argv[1]); let v=m; for(const key of process.argv[2].split("."))v=v[key]; if(typeof v!=="string"||!v)process.exit(1); process.stdout.write(v)' "$manifest" "$1"
+  node "$script_root/scripts/read-manifest-value.mjs" "$manifest" "$1"
 }
 node_sha="$(read_manifest node.sourceSha256)"
 openssl_sha="$(read_manifest openssl.sourceSha256)"
 expected_node_version="v$(read_manifest node.version)"
 expected_openssl_version="$(read_manifest openssl.basis)"
-source_date_epoch="$(node -e 'const m=require(process.argv[1]);process.stdout.write(String(m.sourceDateEpoch))' "$manifest")"
+source_date_epoch="$(node "$script_root/scripts/read-manifest-value.mjs" "$manifest" sourceDateEpoch)"
 [[ "$source_date_epoch" =~ ^[0-9]+$ ]] || { echo "manifest sourceDateEpoch is invalid" >&2; exit 1; }
 
 printf '%s  %s\n' "$node_sha" "$node_tar" | sha256sum -c -

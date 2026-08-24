@@ -11,7 +11,7 @@ for tool in curl sha256sum cmp node mkdir; do command -v "$tool" >/dev/null || {
 mkdir -p "$out"
 
 read_manifest() {
-  node -e 'const m=require(process.argv[1]);let v=m;for(const k of process.argv[2].split("."))v=v[k];if(typeof v!=="string"||!v)process.exit(1);process.stdout.write(v)' "$manifest" "$1"
+  node "$repo_root/scripts/read-manifest-value.mjs" "$manifest" "$1"
 }
 fetch() {
   local name="$1" url="$2" expected="$3"

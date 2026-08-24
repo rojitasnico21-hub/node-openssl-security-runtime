@@ -8,7 +8,8 @@ arch="$1"
 manifest="$2"
 docker_config="$3"
 builder="$4"
-buildkit="$(node -e 'const m=require(process.argv[1]);process.stdout.write(m.toolchain.buildkitImage)' "$manifest")"
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+buildkit="$(node "$script_root/scripts/read-manifest-value.mjs" "$manifest" toolchain.buildkitImage)"
 [[ "$buildkit" == *"@sha256:"* ]] || { echo "BuildKit image is not digest pinned" >&2; exit 1; }
 DOCKER_CONFIG="$docker_config" docker buildx create --name "$builder" --driver docker-container --driver-opt "image=$buildkit" --use
 DOCKER_CONFIG="$docker_config" docker buildx inspect --bootstrap

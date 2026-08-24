@@ -110,26 +110,30 @@ prepare_generation_tree() {
   fi
   git init -q "$canonical_node"
   git -C "$canonical_node" add -A
-  [[ -z "$(git -C "$canonical_node" status --porcelain)" ]]
+  [[ -n "$(git -C "$canonical_node" ls-files)" ]]
+  [[ -z "$(git -C "$canonical_node" ls-files --others --exclude-standard)" ]]
   git -C "$canonical_node" diff --exit-code --quiet
 }
 
 record_generation_input_state() {
   local run="$1" patched="$2" output="$3"
-  local config_sha openssl_sha vendor_sha
+  local config_sha openssl_sha vendor_sha indexed_file_count
   config_sha="$(tree_sha256 "$canonical_node/deps/openssl/config")"
   openssl_sha="$(tree_sha256 "$canonical_full")"
   vendor_sha="$(tree_sha256 "$canonical_node/deps/openssl/openssl")"
+  indexed_file_count="$(git -C "$canonical_node" ls-files | wc -l | tr -d ' ')"
   node - "$output" "$run" "$patched" "$config_sha" "$openssl_sha" "$vendor_sha" \
-    "$source_date_epoch" <<'NODE'
+    "$source_date_epoch" "$indexed_file_count" <<'NODE'
 const { writeFileSync } = require("node:fs");
-const [out, run, patched, configSha256, opensslSha256, vendoredOpenSslSha256, sourceDateEpoch] = process.argv.slice(2);
+const [out, run, patched, configSha256, opensslSha256, vendoredOpenSslSha256, sourceDateEpoch, indexedFileCount] = process.argv.slice(2);
 writeFileSync(out, `${JSON.stringify({
   schemaVersion: 1,
   run,
   patched: patched === "true",
-  gitStatusClean: true,
-  gitDiffClean: true,
+  indexPopulated: Number(indexedFileCount) > 0,
+  indexedFileCount: Number(indexedFileCount),
+  untrackedFilesAbsent: true,
+  worktreeMatchesIndex: true,
   configTreeSha256: configSha256,
   fullOpenSslTreeSha256: opensslSha256,
   vendoredOpenSslTreeSha256: vendoredOpenSslSha256,
@@ -202,8 +206,10 @@ const names = ["patched-run1", "patched-run2", "patched-run3"];
 const runs = names.map((name) => JSON.parse(readFileSync(join(process.argv[2], `${name}.json`), "utf8")));
 const comparable = (run) => ({
   patched: run.patched,
-  gitStatusClean: run.gitStatusClean,
-  gitDiffClean: run.gitDiffClean,
+  indexPopulated: run.indexPopulated,
+  indexedFileCount: run.indexedFileCount,
+  untrackedFilesAbsent: run.untrackedFilesAbsent,
+  worktreeMatchesIndex: run.worktreeMatchesIndex,
   configTreeSha256: run.configTreeSha256,
   fullOpenSslTreeSha256: run.fullOpenSslTreeSha256,
   vendoredOpenSslTreeSha256: run.vendoredOpenSslTreeSha256,

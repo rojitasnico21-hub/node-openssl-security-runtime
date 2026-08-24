@@ -95,6 +95,24 @@ tree_sha256() {
   ) | sha256sum | awk '{print $1}'
 }
 
+assert_full_openssl_tree() {
+  local tree="$1"
+  local sentinel
+  for sentinel in Configure Configurations doc/build.info crypto/build.info ssl/build.info; do
+    [[ -e "$tree/$sentinel" ]] || {
+      printf 'full OpenSSL source sentinel is absent: %s\n' "$tree/$sentinel" >&2
+      return 1
+    }
+  done
+}
+
+assert_generator_git_state() {
+  local tree="$1"
+  [[ -n "$(git -C "$tree" ls-files)" ]]
+  [[ -z "$(git -C "$tree" ls-files --others --exclude-standard)" ]]
+  git -C "$tree" diff --exit-code --quiet
+}
+
 prepare_generation_tree() {
   local patched="$1"
   [[ "$canonical_node" = "$work_root/canonical-node" && "$canonical_full" = "$work_root/canonical-openssl" ]] || {
@@ -108,19 +126,23 @@ prepare_generation_tree() {
     apply_adapted_patch "$canonical_node/deps/openssl/openssl"
     apply_adapted_patch "$canonical_full"
   fi
+  # generate_gypi.pl runs git clean inside the OpenSSL source. Activate the
+  # authentic full tree before indexing so that cleanup cannot delete its
+  # tracked documentation/build metadata.
+  mv "$canonical_node/deps/openssl/openssl" "$canonical_node/.openssl-pruned"
+  mv "$canonical_full" "$canonical_node/deps/openssl/openssl"
+  assert_full_openssl_tree "$canonical_node/deps/openssl/openssl"
   git init -q "$canonical_node"
   git -C "$canonical_node" add -A
-  [[ -n "$(git -C "$canonical_node" ls-files)" ]]
-  [[ -z "$(git -C "$canonical_node" ls-files --others --exclude-standard)" ]]
-  git -C "$canonical_node" diff --exit-code --quiet
+  assert_generator_git_state "$canonical_node"
 }
 
 record_generation_input_state() {
   local run="$1" patched="$2" output="$3"
   local config_sha openssl_sha vendor_sha indexed_file_count
   config_sha="$(tree_sha256 "$canonical_node/deps/openssl/config")"
-  openssl_sha="$(tree_sha256 "$canonical_full")"
-  vendor_sha="$(tree_sha256 "$canonical_node/deps/openssl/openssl")"
+  openssl_sha="$(tree_sha256 "$canonical_node/deps/openssl/openssl")"
+  vendor_sha="$(tree_sha256 "$canonical_node/.openssl-pruned")"
   indexed_file_count="$(git -C "$canonical_node" ls-files | wc -l | tr -d ' ')"
   node - "$output" "$run" "$patched" "$config_sha" "$openssl_sha" "$vendor_sha" \
     "$source_date_epoch" "$indexed_file_count" <<'NODE'
@@ -148,13 +170,18 @@ writeFileSync(out, `${JSON.stringify({
 NODE
 }
 generate_headers() {
-  local node_root="$1" full_openssl="$2" destination="$3" expect_patched="$4"
-  local node_openssl="$node_root/deps/openssl/openssl" pruned="$node_root/.openssl-pruned" generated="$node_root/.openssl-generated"
-  mv "$node_openssl" "$pruned"
-  mv "$full_openssl" "$node_openssl"
+  local node_root="$1" destination="$2" expect_patched="$3" run="$4" input_state_output="$5"
+  local node_openssl="$node_root/deps/openssl/openssl" pruned="$node_root/.openssl-pruned"
+  [[ -d "$node_openssl" && -d "$pruned" ]] || { echo "full and pruned OpenSSL trees are not both present" >&2; exit 1; }
   make -C "$node_root/deps/openssl/config" clean
   sed -i 's/#ifdef/%ifdef/g' "$node_openssl/crypto/perlasm/x86asm.pl"
   sed -i 's/#endif/%endif/g' "$node_openssl/crypto/perlasm/x86asm.pl"
+  assert_full_openssl_tree "$node_openssl"
+  # clean and the assembler portability adjustment intentionally mutate the
+  # final generator tree; refresh its index before recording the input state.
+  git -C "$node_root" add -A
+  assert_generator_git_state "$node_root"
+  record_generation_input_state "$run" "$expect_patched" "$input_state_output"
   SOURCE_DATE_EPOCH="$source_date_epoch" PATH="/opt/nasm/usr/bin:$PATH" make -C "$node_root/deps/openssl/config"
   grep -Fqx '#include "../../../config/ssl.h"' "$node_openssl/include/openssl/ssl.h"
   if [[ "$expect_patched" = true ]]; then
@@ -171,8 +198,6 @@ generate_headers() {
   cp "$node_openssl/include/openssl/ssl.h" "$destination/ssl.h"
   hash_tree "$destination" "$destination/SHA256SUMS"
   cp "$node_openssl/include/openssl/ssl.h" "$pruned/include/openssl/ssl.h"
-  mv "$node_openssl" "$generated"
-  mv "$pruned" "$node_openssl"
 }
 
 canonical_node="$work_root/canonical-node"
@@ -184,20 +209,16 @@ mkdir -p "$input_state_dir"
 # This makes absolute paths in OpenSSL configdata.pm an identical input while
 # SOURCE_DATE_EPOCH makes OpenSSL buildinf.h deterministic.
 prepare_generation_tree false
-record_generation_input_state baseline false "$input_state_dir/baseline.json"
-generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/baseline" false
+generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/baseline" false baseline "$input_state_dir/baseline.json"
 
 prepare_generation_tree true
-record_generation_input_state patched-run1 true "$input_state_dir/patched-run1.json"
-generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/patched" true
+generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/patched" true patched-run1 "$input_state_dir/patched-run1.json"
 
 prepare_generation_tree true
-record_generation_input_state patched-run2 true "$input_state_dir/patched-run2.json"
-generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/repeat" true
+generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/repeat" true patched-run2 "$input_state_dir/patched-run2.json"
 
 prepare_generation_tree true
-record_generation_input_state patched-run3 true "$input_state_dir/patched-run3.json"
-generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/repeat-2" true
+generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/repeat-2" true patched-run3 "$input_state_dir/patched-run3.json"
 
 node - "$input_state_dir" <<'NODE'
 const { readFileSync, writeFileSync } = require("node:fs");

@@ -76,22 +76,82 @@ apply_adapted_patch() {
 }
 hash_tree() {
   local tree="$1" destination="$2"
+  local temporary
+  # Write outside the tree: a manifest inside the tree would hash itself.
+  rm -f "$destination"
+  temporary="$(mktemp "${TMPDIR:-/tmp}/header-tree.XXXXXX")"
   (
     cd "$tree"
-    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$destination"
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$temporary"
   )
+  mv "$temporary" "$destination"
+}
+
+tree_sha256() {
+  local tree="$1"
+  (
+    cd "$tree"
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  ) | sha256sum | awk '{print $1}'
+}
+
+prepare_generation_tree() {
+  local patched="$1"
+  [[ "$canonical_node" = "$work_root/canonical-node" && "$canonical_full" = "$work_root/canonical-openssl" ]] || {
+    echo "refusing to reset a non-canonical generation tree" >&2
+    exit 1
+  }
+  rm -rf "$canonical_node" "$canonical_full"
+  extract_node "$canonical_node"
+  extract_openssl "$canonical_full"
+  if [[ "$patched" = true ]]; then
+    apply_adapted_patch "$canonical_node/deps/openssl/openssl"
+    apply_adapted_patch "$canonical_full"
+  fi
+  git init -q "$canonical_node"
+  git -C "$canonical_node" add -A
+  [[ -z "$(git -C "$canonical_node" status --porcelain)" ]]
+  git -C "$canonical_node" diff --exit-code --quiet
+}
+
+record_generation_input_state() {
+  local run="$1" patched="$2" output="$3"
+  local config_sha openssl_sha vendor_sha
+  config_sha="$(tree_sha256 "$canonical_node/deps/openssl/config")"
+  openssl_sha="$(tree_sha256 "$canonical_full")"
+  vendor_sha="$(tree_sha256 "$canonical_node/deps/openssl/openssl")"
+  node - "$output" "$run" "$patched" "$config_sha" "$openssl_sha" "$vendor_sha" \
+    "$source_date_epoch" <<'NODE'
+const { writeFileSync } = require("node:fs");
+const [out, run, patched, configSha256, opensslSha256, vendoredOpenSslSha256, sourceDateEpoch] = process.argv.slice(2);
+writeFileSync(out, `${JSON.stringify({
+  schemaVersion: 1,
+  run,
+  patched: patched === "true",
+  gitStatusClean: true,
+  gitDiffClean: true,
+  configTreeSha256: configSha256,
+  fullOpenSslTreeSha256: opensslSha256,
+  vendoredOpenSslTreeSha256: vendoredOpenSslSha256,
+  environment: {
+    lcAll: process.env.LC_ALL,
+    tz: process.env.TZ,
+    path: process.env.PATH,
+    sourceDateEpoch,
+    umask: "022",
+  },
+}, null, 2)}\n`);
+NODE
 }
 generate_headers() {
   local node_root="$1" full_openssl="$2" destination="$3" expect_patched="$4"
   local node_openssl="$node_root/deps/openssl/openssl" pruned="$node_root/.openssl-pruned" generated="$node_root/.openssl-generated"
   mv "$node_openssl" "$pruned"
   mv "$full_openssl" "$node_openssl"
-  git init -q "$node_root"
-  git -C "$node_root" add -A
   make -C "$node_root/deps/openssl/config" clean
   sed -i 's/#ifdef/%ifdef/g' "$node_openssl/crypto/perlasm/x86asm.pl"
   sed -i 's/#endif/%endif/g' "$node_openssl/crypto/perlasm/x86asm.pl"
-  PATH="/opt/nasm/usr/bin:$PATH" make -C "$node_root/deps/openssl/config"
+  SOURCE_DATE_EPOCH="$source_date_epoch" PATH="/opt/nasm/usr/bin:$PATH" make -C "$node_root/deps/openssl/config"
   grep -Fqx '#include "../../../config/ssl.h"' "$node_openssl/include/openssl/ssl.h"
   if [[ "$expect_patched" = true ]]; then
     for header in \
@@ -111,29 +171,60 @@ generate_headers() {
   mv "$pruned" "$node_openssl"
 }
 
-baseline_node="$work_root/baseline-node"
-patched_node="$work_root/patched-node"
-repeat_node="$work_root/repeat-node"
-baseline_full="$work_root/baseline-openssl"
-patched_full="$work_root/patched-openssl"
-repeat_full="$work_root/repeat-openssl"
-extract_node "$baseline_node"
-extract_node "$patched_node"
-extract_node "$repeat_node"
-extract_openssl "$baseline_full"
-extract_openssl "$patched_full"
-extract_openssl "$repeat_full"
+canonical_node="$work_root/canonical-node"
+canonical_full="$work_root/canonical-openssl"
+input_state_dir="$output_dir/evidence/generated-header-inputs"
+mkdir -p "$input_state_dir"
 
-# Tree A is official Node 22.23.2 + unpatched OpenSSL 3.5.7. Trees B and C
-# receive the exact audited patch; B is built and C is the controlled repeat.
-generate_headers "$baseline_node" "$baseline_full" "$output_dir/evidence/generated-headers/baseline" false
-apply_adapted_patch "$patched_node/deps/openssl/openssl"
-apply_adapted_patch "$patched_full"
-generate_headers "$patched_node" "$patched_full" "$output_dir/evidence/generated-headers/patched" true
-apply_adapted_patch "$repeat_node/deps/openssl/openssl"
-apply_adapted_patch "$repeat_full"
-generate_headers "$repeat_node" "$repeat_full" "$output_dir/evidence/generated-headers/repeat" true
+# Every run is independently reconstructed at the same canonical source path.
+# This makes absolute paths in OpenSSL configdata.pm an identical input while
+# SOURCE_DATE_EPOCH makes OpenSSL buildinf.h deterministic.
+prepare_generation_tree false
+record_generation_input_state baseline false "$input_state_dir/baseline.json"
+generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/baseline" false
+
+prepare_generation_tree true
+record_generation_input_state patched-run1 true "$input_state_dir/patched-run1.json"
+generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/patched" true
+
+prepare_generation_tree true
+record_generation_input_state patched-run2 true "$input_state_dir/patched-run2.json"
+generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/repeat" true
+
+prepare_generation_tree true
+record_generation_input_state patched-run3 true "$input_state_dir/patched-run3.json"
+generate_headers "$canonical_node" "$canonical_full" "$output_dir/evidence/generated-headers/repeat-2" true
+
+node - "$input_state_dir" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const names = ["patched-run1", "patched-run2", "patched-run3"];
+const runs = names.map((name) => JSON.parse(readFileSync(join(process.argv[2], `${name}.json`), "utf8")));
+const comparable = (run) => ({
+  patched: run.patched,
+  gitStatusClean: run.gitStatusClean,
+  gitDiffClean: run.gitDiffClean,
+  configTreeSha256: run.configTreeSha256,
+  fullOpenSslTreeSha256: run.fullOpenSslTreeSha256,
+  vendoredOpenSslTreeSha256: run.vendoredOpenSslTreeSha256,
+  environment: run.environment,
+});
+const reference = JSON.stringify(comparable(runs[0]));
+if (!runs.every((run) => JSON.stringify(comparable(run)) === reference)) {
+  throw new Error("independently reconstructed patched generator inputs differ");
+}
+writeFileSync(join(process.argv[2], "PATCHED_INPUT_STATE_COMPARISON.json"), `${JSON.stringify({
+  schemaVersion: 1,
+  runs: names,
+  independentlyReconstructed: true,
+  canonicalPathPolicy: "one reconstructed source path reused only after complete reset",
+  identical: true,
+}, null, 2)}\n`);
+NODE
+
 cmp "$output_dir/evidence/generated-headers/patched/SHA256SUMS" "$output_dir/evidence/generated-headers/repeat/SHA256SUMS"
+cmp "$output_dir/evidence/generated-headers/repeat/SHA256SUMS" "$output_dir/evidence/generated-headers/repeat-2/SHA256SUMS"
+cmp "$output_dir/evidence/generated-headers/patched/SHA256SUMS" "$output_dir/evidence/generated-headers/repeat-2/SHA256SUMS"
 (
   cd "$output_dir/evidence/generated-headers"
   diff -ruN baseline patched > ../GENERATED_HEADERS.diff || status=$?
@@ -159,8 +250,9 @@ writeFileSync(out, `${JSON.stringify({
   macro: "SSL_VALUE_QUIC_MAX_PENDING_CONNS",
   macroValue: 16,
   baselineHeaderTreeSha256: hash(join(base, "generated-headers/baseline/SHA256SUMS")),
-  patchedHeaderTreeSha256: hash(join(base, "generated-headers/patched/SHA256SUMS")),
-  repeatHeaderTreeSha256: hash(join(base, "generated-headers/repeat/SHA256SUMS")),
+  patchedRun1HeaderTreeSha256: hash(join(base, "generated-headers/patched/SHA256SUMS")),
+  patchedRun2HeaderTreeSha256: hash(join(base, "generated-headers/repeat/SHA256SUMS")),
+  patchedRun3HeaderTreeSha256: hash(join(base, "generated-headers/repeat-2/SHA256SUMS")),
   reproducible: true,
   diffSha256: hash(join(base, "GENERATED_HEADERS.diff")),
 }, null, 2)}\n`);
@@ -172,17 +264,19 @@ if (( headers_only )); then
 fi
 
 (
-  cd "$patched_node"
+  cd "$canonical_node"
   SOURCE_DATE_EPOCH="$source_date_epoch" ./configure --without-npm
   make -j"${JOBS:-2}"
 )
-node_binary="$patched_node/out/Release/node"
+node_binary="$canonical_node/out/Release/node"
 [[ -x "$node_binary" ]] || { echo "Node build did not produce out/Release/node" >&2; exit 1; }
 install -m 0755 "$node_binary" "$output_dir/nodejs/bin/node"
 [[ "$("$output_dir/nodejs/bin/node" --version)" = "$expected_node_version" ]]
 [[ "$("$output_dir/nodejs/bin/node" -p 'process.versions.openssl')" = "$expected_openssl_version" ]]
 
-"$script_root/scripts/run-quic-pending-limit-regression.sh" "$arch" "$patched_node" "$baseline_node/deps/openssl/openssl" "$output_dir/evidence"
+baseline_openssl_for_probe="$work_root/baseline-openssl-probe"
+extract_openssl "$baseline_openssl_for_probe"
+"$script_root/scripts/run-quic-pending-limit-regression.sh" "$arch" "$canonical_node" "$baseline_openssl_for_probe" "$output_dir/evidence"
 
 readelf -h "$output_dir/nodejs/bin/node" > "$output_dir/evidence/ELF.txt"
 readelf -d "$output_dir/nodejs/bin/node" > "$output_dir/evidence/DT_NEEDED.txt"

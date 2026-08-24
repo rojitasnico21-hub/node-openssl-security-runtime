@@ -128,7 +128,7 @@ jobs:
           if (report.policy?.rawSha256CoverageVerified !== true) throw new Error("raw SHA coverage was not verified");
           if (report.normalizedPatchedTreesByteIdentical !== true) throw new Error("three normalized patched generations differ");
           NODE
-          normalized="$RUNNER_TEMP/headers/evidence/generated-headers/normalized"
+          normalized="$RUNNER_TEMP/headers/evidence/normalized-generated-headers"
           cmp "$normalized/patched/SHA256SUMS" "$normalized/repeat/SHA256SUMS"
           cmp "$normalized/repeat/SHA256SUMS" "$normalized/repeat-2/SHA256SUMS"
           cmp "$normalized/patched/SHA256SUMS" "$normalized/repeat-2/SHA256SUMS"

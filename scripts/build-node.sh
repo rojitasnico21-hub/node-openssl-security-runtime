@@ -84,7 +84,8 @@ hash_tree() {
     cd "$tree"
     find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$temporary"
   )
-  mv "$temporary" "$destination"
+  install -m 0644 "$temporary" "$destination"
+  rm -f "$temporary"
 }
 
 tree_sha256() {
@@ -204,7 +205,7 @@ canonical_node="$work_root/canonical-node"
 canonical_full="$work_root/canonical-openssl"
 input_state_dir="$output_dir/evidence/generated-header-inputs"
 generated_headers_dir="$output_dir/evidence/generated-headers"
-normalized_headers_dir="$generated_headers_dir/normalized"
+normalized_headers_dir="$output_dir/evidence/normalized-generated-headers"
 reproducibility_report="$output_dir/evidence/GENERATED_HEADER_REPRODUCIBILITY.json"
 mkdir -p "$input_state_dir"
 
@@ -292,10 +293,10 @@ writeFileSync(out, `${JSON.stringify({
   architectures: ["linux-x86_64", "linux-aarch64"],
   macro: "SSL_VALUE_QUIC_MAX_PENDING_CONNS",
   macroValue: 16,
-  baselineHeaderTreeSha256: hash(join(base, "generated-headers/normalized/baseline/SHA256SUMS")),
-  patchedRun1HeaderTreeSha256: hash(join(base, "generated-headers/normalized/patched/SHA256SUMS")),
-  patchedRun2HeaderTreeSha256: hash(join(base, "generated-headers/normalized/repeat/SHA256SUMS")),
-  patchedRun3HeaderTreeSha256: hash(join(base, "generated-headers/normalized/repeat-2/SHA256SUMS")),
+  baselineHeaderTreeSha256: hash(join(base, "normalized-generated-headers/baseline/SHA256SUMS")),
+  patchedRun1HeaderTreeSha256: hash(join(base, "normalized-generated-headers/patched/SHA256SUMS")),
+  patchedRun2HeaderTreeSha256: hash(join(base, "normalized-generated-headers/repeat/SHA256SUMS")),
+  patchedRun3HeaderTreeSha256: hash(join(base, "normalized-generated-headers/repeat-2/SHA256SUMS")),
   rawBaselineHeaderTreeSha256: hash(join(base, "generated-headers/baseline/SHA256SUMS")),
   rawPatchedRun1HeaderTreeSha256: hash(join(base, "generated-headers/patched/SHA256SUMS")),
   rawPatchedRun2HeaderTreeSha256: hash(join(base, "generated-headers/repeat/SHA256SUMS")),

@@ -1,5 +1,7 @@
 {
-  "builder": "patched-node-runtime",
+  "schemaVersion": 2,
+  "builder": "node-openssl-security-runtime",
+  "sourceDateEpoch": 1785275555,
   "node": {
     "version": "22.23.2",
     "sourceTagCommit": "aa4c77582be995286fc6e00aaf530dc7ade102a9",
@@ -12,8 +14,15 @@
     "sourceUrl": "https://codeload.github.com/openssl/openssl/tar.gz/refs/tags/openssl-3.5.7",
     "fixCommit": "08e7756c3900bcfd77a720e7b74e27d6e4ed01a9",
     "officialPatchSha256": "3b4f3ff1e9d26ca3dd75f6d98cc5d30c7dbfc03892e4bc0037a7e14bec8c5087",
+    "officialPatchUrl": "https://github.com/openssl/openssl/commit/08e7756c3900bcfd77a720e7b74e27d6e4ed01a9.patch",
     "adaptedPatchSha256": "b23805accae194a81fb43f07c1fbac8fdb13a4d267ef7e687bfb800241581d01",
-    "adaptationRemovedPath": "doc/man3/SSL_get_value_uint.pod"
+    "adaptation": {
+      "removedPaths": ["doc/man3/SSL_get_value_uint.pod"],
+      "removedClassification": "DOCUMENTATION_ONLY",
+      "removedSecurityCodeLines": 0,
+      "removedTestCodeLines": 0,
+      "securityHunksByteIdentical": true
+    }
   },
   "dependencies": {
     "textTemplate": {
@@ -25,6 +34,7 @@
     },
     "nasm": {
       "version": "2.16.01-1",
+      "urlBase": "https://deb.debian.org/debian/pool/main/n/nasm/",
       "amd64": {
         "package": "nasm_2.16.01-1_amd64.deb",
         "sha256": "0180693ad5d2da8b36e7d73b9b596dc3e9f900238e3de699976c0576875b878f"
@@ -32,25 +42,59 @@
       "arm64": {
         "package": "nasm_2.16.01-1_arm64.deb",
         "sha256": "291e7bd6c76358bc44f0a5b5dae2320f3d63f6a1da004d70b3f024de5f5fa493"
-      },
-      "urlBase": "https://deb.debian.org/debian/pool/main/n/nasm/"
+      }
     }
   },
-  "builderBase": {
-    "image": "node:22.23.2-bookworm",
-    "digest": "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
+  "toolchain": {
+    "dockerfileFrontend": "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+    "buildx": {
+      "version": "v0.36.1",
+      "amd64Sha256": "48af8a397ebd60178778bf63611dbcebe5f5e7a9be90eb9147b24b9587455778",
+      "arm64Sha256": "5d0cafd9d16afe1a0f0d9529885344ace2cc99efdd531b6c783c5455a6001569"
+    },
+    "buildkitImage": "moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8",
+    "trivy": {
+      "version": "0.74.0",
+      "amd64Sha256": "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a",
+      "arm64Sha256": "b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5"
+    },
+    "cosign": {
+      "version": "3.1.3",
+      "checksumsSha256": "aec2a6f68d307b09ae196e388dc691a146fa8bdba7fcce9ca4ca41b918adfa63",
+      "amd64Sha256": "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
+      "arm64Sha256": "c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
+    }
   },
-  "runners": {
-    "amd64": "ubuntu-24.04",
-    "arm64": "ubuntu-24.04-arm"
+  "images": {
+    "nodeBuildBase": {
+      "image": "node:22.23.2-bookworm",
+      "indexDigest": "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a",
+      "amd64Digest": "sha256:673fce836d5a9185da33352682bfedb17c174d016370d08616748dff76fda862",
+      "arm64Digest": "sha256:91813ddbc330d835ad5ea0e1aa9de6a0e0e3e27e84d973e380ae1f7d2ae308bc"
+    },
+    "runtimeBase": {
+      "image": "gcr.io/distroless/base-nossl-debian12",
+      "indexDigest": "sha256:e35893f8ca1cabfbd60394af94899c20930c4615355adf97c5da660a51b61bca",
+      "amd64Digest": "sha256:92f9f60d703e442d35874e8bd5acce029b2f26c76c67e4923a6a1d0b7170d530",
+      "arm64Digest": "sha256:58999a3cb0d37e4036509dddafccb1961aa76f4fcbac75d589e07a2de9764426"
+    }
   },
-  "trivy": {
-    "version": "0.74.0",
-    "severity": [
-      "HIGH",
-      "CRITICAL"
-    ],
-    "exitCode": 1,
-    "ignoreUnfixed": false
+  "runtimeSchema": {
+    "nodePath": "/nodejs/bin/node",
+    "provenancePath": "/evidence/RUNTIME_PROVENANCE.json",
+    "packageFormat": "tar.gz",
+    "requiredEvidence": [
+      "RUNTIME_PROVENANCE.json",
+      "ELF.json",
+      "DT_NEEDED.txt",
+      "PATCH_EQUIVALENCE.json",
+      "GENERATED_HEADERS.json",
+      "CVE_NEGATIVE_CONTROL.json",
+      "CVE_POSITIVE_CONTROL.json",
+      "TRIVY.json",
+      "TRIVY_DB.json",
+      "SBOM.cdx.json",
+      "SHA256SUMS"
+    ]
   }
 }

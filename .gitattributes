@@ -1,0 +1,5 @@
+# These two upstream-derived files are retained byte-for-byte for legal and
+# patch-integrity verification. Their upstream formatting is intentionally not
+# rewritten by Git's whitespace diagnostics.
+licenses/Node-LICENSE whitespace=-space-before-tab
+patches/openssl-CVE-2026-14456-official.patch whitespace=-trailing-space

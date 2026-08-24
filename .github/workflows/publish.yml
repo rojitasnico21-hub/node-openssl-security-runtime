@@ -1,0 +1,245 @@
+name: Promote Certified Node Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      certification_run_id:
+        description: Successful trusted-main certification run ID
+        required: true
+        type: string
+      source_commit:
+        description: Exact trusted public-main commit certified by that run
+        required: true
+        type: string
+      release_tag:
+        description: New immutable public runtime tag
+        required: true
+        type: string
+      confirm_publish:
+        description: Must be exactly PROMOTE_CERTIFIED_RUNTIME
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate-trusted-certified-input
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release_tag: ${{ steps.input.outputs.release_tag }}
+    steps:
+      - name: Fail closed unless a trusted main user authorizes promotion
+        id: input
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" = rojitasnico21-hub/node-openssl-security-runtime ]]
+          [[ "$GITHUB_REF" = refs/heads/main ]]
+          [[ "${{ inputs.confirm_publish }}" = PROMOTE_CERTIFIED_RUNTIME ]]
+          [[ "${{ inputs.source_commit }}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${{ inputs.release_tag }}" =~ ^runtime-v22\.23\.2-cve-2026-14456-[a-z0-9._-]+$ ]]
+          printf 'release_tag=%s\n' "${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Confirm requested source is reachable from trusted public main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${{ inputs.source_commit }}" origin/main
+          [[ "$(git rev-parse HEAD)" = "${{ inputs.source_commit }}" ]]
+      - name: Download only both named certification artifacts from the exact run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.certification_run_id }}
+          pattern: certified-node-runtime-*
+          path: ${{ runner.temp }}/certification
+          merge-multiple: false
+      - name: Verify both packages, provenance, checksums, and CVE controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            package="$(find "$RUNNER_TEMP/certification" -type f -name node-openssl-security-runtime.tar.gz -path "*${arch}*" -print -quit)"
+            [[ -n "$package" ]] || { echo "missing certified package for $arch" >&2; exit 1; }
+            mkdir -p "$RUNNER_TEMP/extracted/$arch"
+            tar -xzf "$package" -C "$RUNNER_TEMP/extracted/$arch"
+            bash scripts/verify-promotable-package.sh "$RUNNER_TEMP/extracted/$arch" "$arch" "${{ inputs.source_commit }}"
+          done
+
+  runtime-image:
+    name: runtime-image-${{ matrix.arch }}
+    needs: validate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Download single certified package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.certification_run_id }}
+          name: certified-node-runtime-${{ matrix.arch }}-${{ inputs.certification_run_id }}
+          path: ${{ runner.temp }}/certification
+      - name: Verify package and native architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          case '${{ matrix.arch }}' in
+            amd64) [[ "$(uname -m)" = x86_64 ]] ;;
+            arm64) [[ "$(uname -m)" = aarch64 ]] ;;
+          esac
+          package="$(find "$RUNNER_TEMP/certification" -type f -name node-openssl-security-runtime.tar.gz -print -quit)"
+          [[ -n "$package" ]]
+          mkdir -p "$RUNNER_TEMP/runtime"
+          tar -xzf "$package" -C "$RUNNER_TEMP/runtime"
+          bash scripts/verify-promotable-package.sh "$RUNNER_TEMP/runtime" '${{ matrix.arch }}' "${{ inputs.source_commit }}"
+      - name: Install verified Buildx and pinned BuildKit daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          bash scripts/install-buildx.sh '${{ matrix.arch }}' BUILD_MANIFEST.json "$DOCKER_CONFIG"
+          bash scripts/configure-buildkit.sh '${{ matrix.arch }}' BUILD_MANIFEST.json "$DOCKER_CONFIG" "publish-${{ matrix.arch }}-$GITHUB_RUN_ID"
+      - name: Fail if immutable architecture tag already exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ matrix.arch }}"
+          if docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
+            echo "immutable architecture tag already exists: $image" >&2
+            exit 1
+          fi
+      - name: Build and publish only the verified custom runtime OCI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ matrix.arch }}"
+          docker buildx build --platform '${{ matrix.platform }}' --load --file Dockerfile.runtime --tag "$image" "$RUNNER_TEMP/runtime"
+          bash scripts/verify-runtime-image.sh '${{ matrix.arch }}' "$image"
+          bash scripts/install-trivy.sh '${{ matrix.arch }}' BUILD_MANIFEST.json "$RUNNER_TEMP/trivy-bin"
+          export TRIVY_CACHE_DIR="$RUNNER_TEMP/trivy-cache"
+          "$RUNNER_TEMP/trivy-bin/trivy" image --download-db-only
+          "$RUNNER_TEMP/trivy-bin/trivy" image --skip-db-update --severity HIGH,CRITICAL --exit-code 1 "$image"
+          docker push "$image"
+      - name: Sign architecture runtime with keyless identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/install-cosign.sh '${{ matrix.arch }}' BUILD_MANIFEST.json "$RUNNER_TEMP/cosign-bin"
+          "$RUNNER_TEMP/cosign-bin/cosign" sign --yes "ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ matrix.arch }}"
+
+
+  promote:
+    name: publish-immutable-multiarch-index-and-release-mirror
+    needs: [validate, runtime-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Download trusted packages and aggregate retained evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.certification_run_id }}
+          pattern: certified-node-runtime-*
+          path: ${{ runner.temp }}/certification
+          merge-multiple: false
+      - name: Verify both packages and write aggregate manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          if git rev-parse "refs/tags/${{ inputs.release_tag }}" >/dev/null 2>&1; then
+            echo "immutable release tag already exists" >&2
+            exit 1
+          fi
+          for arch in amd64 arm64; do
+            package="$(find "$RUNNER_TEMP/certification" -type f -name node-openssl-security-runtime.tar.gz -path "*${arch}*" -print -quit)"
+            [[ -n "$package" ]]
+            mkdir -p "$RUNNER_TEMP/runtime/$arch"
+            tar -xzf "$package" -C "$RUNNER_TEMP/runtime/$arch"
+            bash scripts/verify-promotable-package.sh "$RUNNER_TEMP/runtime/$arch" "$arch" "${{ inputs.source_commit }}"
+          done
+          node scripts/write-aggregate-manifest.mjs "$RUNNER_TEMP/AGGREGATE_MANIFEST.json" \
+            "${{ inputs.source_commit }}" "${{ inputs.release_tag }}" \
+            "$RUNNER_TEMP/runtime/amd64" "$RUNNER_TEMP/runtime/arm64"
+      - name: Create and sign immutable multi-architecture OCI index
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          bash scripts/install-buildx.sh amd64 BUILD_MANIFEST.json "$DOCKER_CONFIG"
+          bash scripts/install-cosign.sh amd64 BUILD_MANIFEST.json "$RUNNER_TEMP/cosign-bin"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          base="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:${{ inputs.release_tag }}"
+          if docker buildx imagetools inspect "$base" >/dev/null 2>&1; then
+            echo "immutable multi-architecture tag already exists: $base" >&2
+            exit 1
+          fi
+          for arch in amd64 arm64; do
+            candidate="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-$arch"
+            "$RUNNER_TEMP/cosign-bin/cosign" verify \
+              --certificate-identity "https://github.com/rojitasnico21-hub/node-openssl-security-runtime/.github/workflows/publish.yml@refs/heads/main" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$candidate"
+            docker buildx imagetools create --tag "$base-$arch" "$candidate"
+          done
+          docker buildx imagetools create --tag "$base" "$base-amd64" "$base-arm64"
+          "$RUNNER_TEMP/cosign-bin/cosign" sign --yes "$base"
+          "$RUNNER_TEMP/cosign-bin/cosign" attest --yes --type https://node-openssl-security-runtime.dev/aggregate-manifest/v1 \
+            --predicate "$RUNNER_TEMP/AGGREGATE_MANIFEST.json" "$base"
+      - name: Create immutable public release mirror
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ inputs.release_tag }}" \
+            "$RUNNER_TEMP/AGGREGATE_MANIFEST.json#AGGREGATE_MANIFEST.json" \
+            "$(find "$RUNNER_TEMP/certification" -type f -name node-openssl-security-runtime.tar.gz -path '*amd64*' -print -quit)#node-runtime-amd64.tar.gz" \
+            "$(find "$RUNNER_TEMP/certification" -type f -name node-openssl-security-runtime.tar.gz -path '*arm64*' -print -quit)#node-runtime-arm64.tar.gz" \
+            --target "${{ inputs.source_commit }}" --title "${{ inputs.release_tag }}" \
+            --notes "Immutable multi-architecture custom Node runtime with CVE-2026-14456 security-backport evidence."

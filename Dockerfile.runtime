@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+ARG RUNTIME_BASE=gcr.io/distroless/base-nossl-debian12@sha256:e35893f8ca1cabfbd60394af94899c20930c4615355adf97c5da660a51b61bca
+FROM ${RUNTIME_BASE}
+
+# The context is a verified, architecture-specific package expanded by the
+# promotion workflow. It contains only the custom Node runtime, its
+# readelf-derived closure, public notices, and machine-readable evidence.
+COPY nodejs /nodejs
+COPY closure /
+COPY evidence /evidence
+COPY licenses /licenses
+
+ENTRYPOINT ["/nodejs/bin/node"]

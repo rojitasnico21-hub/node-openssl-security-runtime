@@ -203,22 +203,25 @@ generate_headers() {
 canonical_node="$work_root/canonical-node"
 canonical_full="$work_root/canonical-openssl"
 input_state_dir="$output_dir/evidence/generated-header-inputs"
+generated_headers_dir="$output_dir/evidence/generated-headers"
+normalized_headers_dir="$generated_headers_dir/normalized"
+reproducibility_report="$output_dir/evidence/GENERATED_HEADER_REPRODUCIBILITY.json"
 mkdir -p "$input_state_dir"
 
 # Every run is independently reconstructed at the same canonical source path.
 # This makes absolute paths in OpenSSL configdata.pm an identical input while
 # SOURCE_DATE_EPOCH makes OpenSSL buildinf.h deterministic.
 prepare_generation_tree false
-generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/baseline" false baseline "$input_state_dir/baseline.json"
+generate_headers "$canonical_node" "$generated_headers_dir/baseline" false baseline "$input_state_dir/baseline.json"
 
 prepare_generation_tree true
-generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/patched" true patched-run1 "$input_state_dir/patched-run1.json"
+generate_headers "$canonical_node" "$generated_headers_dir/patched" true patched-run1 "$input_state_dir/patched-run1.json"
 
 prepare_generation_tree true
-generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/repeat" true patched-run2 "$input_state_dir/patched-run2.json"
+generate_headers "$canonical_node" "$generated_headers_dir/repeat" true patched-run2 "$input_state_dir/patched-run2.json"
 
 prepare_generation_tree true
-generate_headers "$canonical_node" "$output_dir/evidence/generated-headers/repeat-2" true patched-run3 "$input_state_dir/patched-run3.json"
+generate_headers "$canonical_node" "$generated_headers_dir/repeat-2" true patched-run3 "$input_state_dir/patched-run3.json"
 
 node - "$input_state_dir" <<'NODE'
 const { readFileSync, writeFileSync } = require("node:fs");
@@ -249,38 +252,62 @@ writeFileSync(join(process.argv[2], "PATCHED_INPUT_STATE_COMPARISON.json"), `${J
 }, null, 2)}\n`);
 NODE
 
-cmp "$output_dir/evidence/generated-headers/patched/SHA256SUMS" "$output_dir/evidence/generated-headers/repeat/SHA256SUMS"
-cmp "$output_dir/evidence/generated-headers/repeat/SHA256SUMS" "$output_dir/evidence/generated-headers/repeat-2/SHA256SUMS"
-cmp "$output_dir/evidence/generated-headers/patched/SHA256SUMS" "$output_dir/evidence/generated-headers/repeat-2/SHA256SUMS"
+# Preserve raw generator output and normalize only evidence copies. The
+# normalizer fails closed unless every raw difference is the proven RANLIB
+# CODE(0x...) process-address representation in a configdata.pm copy.
+node "$script_root/scripts/normalize-generated-header-evidence.mjs" \
+  "$generated_headers_dir" "$normalized_headers_dir" "$reproducibility_report"
+
+# Retain strict byte-for-byte comparison after fail-closed evidence-only
+# normalization; no generated file is excluded from SHA256 coverage.
+cmp "$normalized_headers_dir/patched/SHA256SUMS" "$normalized_headers_dir/repeat/SHA256SUMS"
+cmp "$normalized_headers_dir/repeat/SHA256SUMS" "$normalized_headers_dir/repeat-2/SHA256SUMS"
+cmp "$normalized_headers_dir/patched/SHA256SUMS" "$normalized_headers_dir/repeat-2/SHA256SUMS"
 (
-  cd "$output_dir/evidence/generated-headers"
-  diff -ruN baseline patched > ../GENERATED_HEADERS.diff || status=$?
+  cd "$normalized_headers_dir"
+  diff -ruN baseline patched > "$output_dir/evidence/GENERATED_HEADERS.diff" || status=$?
   [[ ${status:-0} -eq 1 ]]
 )
 for header in \
-  "$output_dir/evidence/generated-headers/patched/archs/linux-x86_64/asm/include/openssl/ssl.h" \
-  "$output_dir/evidence/generated-headers/patched/archs/linux-aarch64/asm/include/openssl/ssl.h"; do
+  "$generated_headers_dir/patched/archs/linux-x86_64/asm/include/openssl/ssl.h" \
+  "$generated_headers_dir/patched/archs/linux-aarch64/asm/include/openssl/ssl.h"; do
   grep -Fqx '#define SSL_VALUE_QUIC_MAX_PENDING_CONNS 16' "$header"
 done
 
-node - "$output_dir/evidence/GENERATED_HEADERS.json" <<'NODE'
+node - "$output_dir/evidence/GENERATED_HEADERS.json" "$reproducibility_report" <<'NODE'
 const { createHash } = require("node:crypto");
 const { readFileSync, writeFileSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const out = process.argv[2];
+const reportPath = process.argv[3];
 const base = dirname(out);
+const report = JSON.parse(readFileSync(reportPath, "utf8"));
 const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+if (report.normalizedPatchedTreesByteIdentical !== true) {
+  throw new Error("normalized generated-header evidence is not reproducible");
+}
 writeFileSync(out, `${JSON.stringify({
-  schemaVersion: 1,
+  schemaVersion: 2,
   generator: "make -C deps/openssl/config",
   architectures: ["linux-x86_64", "linux-aarch64"],
   macro: "SSL_VALUE_QUIC_MAX_PENDING_CONNS",
   macroValue: 16,
-  baselineHeaderTreeSha256: hash(join(base, "generated-headers/baseline/SHA256SUMS")),
-  patchedRun1HeaderTreeSha256: hash(join(base, "generated-headers/patched/SHA256SUMS")),
-  patchedRun2HeaderTreeSha256: hash(join(base, "generated-headers/repeat/SHA256SUMS")),
-  patchedRun3HeaderTreeSha256: hash(join(base, "generated-headers/repeat-2/SHA256SUMS")),
+  baselineHeaderTreeSha256: hash(join(base, "generated-headers/normalized/baseline/SHA256SUMS")),
+  patchedRun1HeaderTreeSha256: hash(join(base, "generated-headers/normalized/patched/SHA256SUMS")),
+  patchedRun2HeaderTreeSha256: hash(join(base, "generated-headers/normalized/repeat/SHA256SUMS")),
+  patchedRun3HeaderTreeSha256: hash(join(base, "generated-headers/normalized/repeat-2/SHA256SUMS")),
+  rawBaselineHeaderTreeSha256: hash(join(base, "generated-headers/baseline/SHA256SUMS")),
+  rawPatchedRun1HeaderTreeSha256: hash(join(base, "generated-headers/patched/SHA256SUMS")),
+  rawPatchedRun2HeaderTreeSha256: hash(join(base, "generated-headers/repeat/SHA256SUMS")),
+  rawPatchedRun3HeaderTreeSha256: hash(join(base, "generated-headers/repeat-2/SHA256SUMS")),
+  rawByteReproducible: report.rawByteReproducible,
+  totalRawDivergentGeneratedFiles: report.totalRawDivergentGeneratedFiles,
+  normalizationPolicy: report.policy.id,
+  normalizationScope: report.policy.scope,
+  rawEvidencePreserved: report.policy.rawEvidencePreserved,
   reproducible: true,
+  reproducibilityReportSha256: hash(reportPath),
+  rawDivergentFilesListSha256: hash(join(base, "GENERATED_HEADER_RAW_DIVERGENT_FILES.txt")),
   diffSha256: hash(join(base, "GENERATED_HEADERS.diff")),
 }, null, 2)}\n`);
 NODE

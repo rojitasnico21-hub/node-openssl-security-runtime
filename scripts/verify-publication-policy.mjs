@@ -9,15 +9,24 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const fail = (message) => { throw new Error(`PUBLICATION_POLICY_ERROR=${message}`); };
 const certify = read(".github/workflows/certify.yml");
 const publish = read(".github/workflows/publish.yml");
+const reproducibility = read(".github/workflows/reproducibility.yml");
 const dockerBuilder = read("Dockerfile.builder");
 const dockerRuntime = read("Dockerfile.runtime");
 
-for (const [name, text] of [["certify", certify], ["publish", publish]]) {
+for (const [name, text] of [["certify", certify], ["publish", publish], ["reproducibility", reproducibility]]) {
   if (!/^on:\n  workflow_dispatch:/m.test(text)) fail(`${name} must be workflow_dispatch-only`);
   if (/pull_request_target|pull_request:|^  push:/m.test(text)) fail(`${name} has an untrusted automatic trigger`);
 }
 if (!/permissions:\n  contents: read\n/m.test(certify)) fail("certification lacks global read-only permission");
 if (/packages: write|id-token: write|contents: write|attestations: write/.test(certify)) fail("certification has promotion permission");
+if (!/permissions:\n  contents: read\n/m.test(reproducibility)) fail("reproducibility workflow lacks global read-only permission");
+if (/\n[ \t]+permissions:|packages:|id-token:|contents: write|attestations:/.test(reproducibility)) fail("reproducibility workflow has job-level or promotion permission");
+if (!/fail-fast: false/.test(reproducibility) || !/ubuntu-24\.04-arm/.test(reproducibility) || !/ubuntu-24\.04/.test(reproducibility)) fail("reproducibility must exercise both native architectures without fail-fast cancellation");
+if (!/build-node\.sh --headers-only/.test(reproducibility) || !/GENERATED_HEADER_REPRODUCIBILITY\.json/.test(reproducibility)) fail("reproducibility evidence gate is incomplete");
+if (!/if: always\(\)/.test(reproducibility) || !/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/.test(reproducibility)) fail("reproducibility diagnostics are not retained");
+if (/--push|docker push|gh release|gh api|ghcr\.io|cosign|oras\b|publish\.yml/.test(reproducibility)) fail("reproducibility workflow may publish");
+if ((reproducibility.match(/docker buildx build/g) || []).length !== 1
+    || (reproducibility.match(/--file "\$context\/Dockerfile\.builder"/g) || []).length !== 1) fail("reproducibility must select the explicit builder Dockerfile exactly once");
 if ((certify.match(/docker buildx build/g) || []).length !== 2) fail("expected exactly two Buildx invocations");
 if ((certify.match(/--file "\$context\/Dockerfile\.builder"/g) || []).length !== 2) fail("every Buildx invocation must select Dockerfile.builder");
 if (/aquasecurity\/trivy-action|--ignore-unfixed|\.trivyignore|continue-on-error|severity:.*LOW/i.test(certify)) fail("certification weakens the Trivy gate");

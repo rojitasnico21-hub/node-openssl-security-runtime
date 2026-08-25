@@ -18,15 +18,51 @@ case "$arch" in
   *) echo "unsupported architecture: $arch" >&2; exit 64 ;;
 esac
 
-for tool in cc make ar find sha256sum node; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }; done
+for tool in cc make ar find sha256sum node awk; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }; done
 [[ -f "$probe" ]] || { echo "probe source is absent" >&2; exit 1; }
 
 find_archive() {
-  local root="$1" archive
-  archive="$(find "$root/out/Release" -type f -name 'openssl.a' -print -quit 2>/dev/null || true)"
-  [[ -n "$archive" && -f "$archive" ]] || { echo "Node OpenSSL archive is absent" >&2; exit 1; }
-  ar t "$archive" | grep -Eq '(^|/)quic_port\.o$' || { echo "Node OpenSSL archive lacks quic_port.o" >&2; exit 1; }
-  printf '%s' "$archive"
+  local root="$1" release expected_archive expected_quic_object candidate quic_member_count
+  local -a candidates=()
+
+  [[ -d "$root" ]] || { echo "Node build tree is absent" >&2; exit 1; }
+  root="$(cd "$root" && pwd -P)"
+  release="$root/out/Release"
+  expected_archive="$release/obj.target/deps/openssl/libopenssl.a"
+  expected_quic_object="$release/obj.target/openssl/deps/openssl/openssl/ssl/quic/quic_port.o"
+
+  if [[ -d "$release" ]]; then
+    while IFS= read -r candidate; do
+      [[ -n "$candidate" ]] && candidates+=("$candidate")
+    done < <(
+      find "$release" -type f \( -name 'libopenssl.a' -o -name 'openssl.a' \) -print |
+        LC_ALL=C sort
+    )
+  fi
+
+  if (( ${#candidates[@]} != 1 )); then
+    echo "expected exactly one Node OpenSSL archive in the current build tree; found ${#candidates[@]}" >&2
+    if (( ${#candidates[@]} > 0 )); then
+      printf 'archive candidate: %s\n' "${candidates[@]}" >&2
+    fi
+    exit 1
+  fi
+  [[ "${candidates[0]}" = "$expected_archive" ]] || {
+    echo "unexpected Node OpenSSL archive path: ${candidates[0]}" >&2
+    echo "expected: $expected_archive" >&2
+    exit 1
+  }
+  [[ -f "$expected_quic_object" ]] || {
+    echo "Node OpenSSL quic_port.o object is absent from the current build tree" >&2
+    exit 1
+  }
+
+  quic_member_count="$(ar t "$expected_archive" | awk '$0 ~ /(^|\/)quic_port[.]o$/ { count++ } END { print count + 0 }')"
+  [[ "$quic_member_count" = 1 ]] || {
+    echo "Node OpenSSL archive must contain exactly one quic_port.o member; found $quic_member_count" >&2
+    exit 1
+  }
+  printf '%s\n' "$expected_archive"
 }
 
 compile_probe() {
@@ -80,8 +116,19 @@ case "$baseline_rc" in
     ;;
 esac
 
+node_root="$(cd "$node_root" && pwd -P)"
 node_ssl_archive="$(find_archive "$node_root")"
 node_crypto_archive="$node_ssl_archive"
+node_quic_object="$node_root/out/Release/obj.target/openssl/deps/openssl/openssl/ssl/quic/quic_port.o"
+node_quic_archive_member="$(ar t "$node_ssl_archive" | awk '$0 ~ /(^|\/)quic_port[.]o$/ && member == "" { member = $0 } END { print member }')"
+[[ -n "$node_quic_archive_member" ]] || { echo "Node OpenSSL archive quic_port.o member cannot be identified" >&2; exit 1; }
+node_quic_archive_member_relative="${node_quic_archive_member#"$node_root/"}"
+case "$node_quic_archive_member_relative" in
+  /*|../*|*/../*) echo "Node OpenSSL archive member escapes the current build tree" >&2; exit 1 ;;
+esac
+node_quic_object_sha256="$(sha256sum "$node_quic_object" | awk '{ print $1 }')"
+node_ssl_archive_relative="${node_ssl_archive#"$node_root/"}"
+node_quic_object_relative="${node_quic_object#"$node_root/"}"
 config_include="$node_root/deps/openssl/config/archs/$generated_arch/asm/include"
 [[ -d "$config_include" ]] || { echo "Node generated config include is absent" >&2; exit 1; }
 if ! compile_probe "$node_root/deps/openssl/openssl/include" "$config_include" "$node_ssl_archive" "$node_crypto_archive" "$evidence_dir/patched-probe"; then
@@ -112,6 +159,10 @@ grep -Fqx '#define DEFAULT_MAX_PENDING_CONNS 256' "$guard_source"
 grep -Fq 'ossl_list_incoming_ch_num(&port->incoming_channel_list) >= port->max_pending_channels' "$guard_source"
 
 NODE_OPENSSL_ARCHIVE="$node_ssl_archive" \
+NODE_OPENSSL_ARCHIVE_RELATIVE="$node_ssl_archive_relative" \
+NODE_OPENSSL_ARCHIVE_MEMBER="$node_quic_archive_member_relative" \
+NODE_OPENSSL_QUIC_OBJECT_RELATIVE="$node_quic_object_relative" \
+NODE_OPENSSL_QUIC_OBJECT_SHA256="$node_quic_object_sha256" \
 BASELINE_SSL_ARCHIVE="$baseline_ssl" \
 ARCH="$arch" \
 node - "$evidence_dir" <<'NODE'
@@ -136,6 +187,10 @@ writeFileSync(join(out, "CVE_POSITIVE_CONTROL.json"), `${JSON.stringify({
   test: "QUIC listener pending-capacity API contract",
   defaultMaxPendingConnections: 256,
   sourceGuard: "incoming queue is rejected at configured maximum",
+  nodeOpenSslArchivePath: process.env.NODE_OPENSSL_ARCHIVE_RELATIVE,
+  nodeOpenSslArchiveMemberQuicPort: process.env.NODE_OPENSSL_ARCHIVE_MEMBER,
+  nodeOpenSslQuicObjectPath: process.env.NODE_OPENSSL_QUIC_OBJECT_RELATIVE,
+  nodeOpenSslQuicObjectSha256: process.env.NODE_OPENSSL_QUIC_OBJECT_SHA256,
   nodeOpenSslArchiveSha256: hash(process.env.NODE_OPENSSL_ARCHIVE),
 }, null, 2)}\n`);
 NODE

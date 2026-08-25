@@ -30,12 +30,20 @@ find_archive() {
 }
 
 compile_probe() {
-  local label="$1" include_root="$2" config_include="$3" ssl_archive="$4" crypto_archive="$5" binary="$6"
+  local include_root="$1" config_include="$2" ssl_archive="$3" crypto_archive="$4" binary="$5"
   cc -std=c11 -Wall -Wextra -Werror \
     -I"$include_root" -I"$config_include" \
     "$probe" "$ssl_archive" "$crypto_archive" -ldl -pthread -lz -o "$binary"
-  "$binary"
-  printf '%s\n' "${label}=PASS"
+}
+
+run_probe() {
+  local binary="$1" rc
+  if "$binary"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  return "$rc"
 }
 
 # The negative control is a fresh OpenSSL 3.5.7 tree with no patch. It runs the
@@ -49,16 +57,55 @@ compile_probe() {
 baseline_ssl="$baseline_root/libssl.a"
 baseline_crypto="$baseline_root/libcrypto.a"
 [[ -f "$baseline_ssl" && -f "$baseline_crypto" ]] || { echo "baseline OpenSSL archives are absent" >&2; exit 1; }
-if compile_probe baseline "$baseline_root/include" "$baseline_root/include" "$baseline_ssl" "$baseline_crypto" "$evidence_dir/baseline-probe"; then
-  echo "unpatched baseline unexpectedly satisfied the fixed capacity contract" >&2
+if ! compile_probe "$baseline_root/include" "$baseline_root/include" "$baseline_ssl" "$baseline_crypto" "$evidence_dir/baseline-probe"; then
+  echo "baseline probe compilation failed; negative control is invalid" >&2
   exit 1
 fi
+if run_probe "$evidence_dir/baseline-probe"; then
+  baseline_rc=0
+else
+  baseline_rc=$?
+fi
+case "$baseline_rc" in
+  1)
+    printf '%s\n' 'baseline=FAIL_AS_EXPECTED'
+    ;;
+  0)
+    echo "unpatched baseline unexpectedly satisfied the fixed capacity contract" >&2
+    exit 1
+    ;;
+  *)
+    echo "baseline probe execution failed with exit code ${baseline_rc}; negative control is invalid" >&2
+    exit 1
+    ;;
+esac
 
 node_ssl_archive="$(find_archive "$node_root")"
 node_crypto_archive="$node_ssl_archive"
 config_include="$node_root/deps/openssl/config/archs/$generated_arch/asm/include"
 [[ -d "$config_include" ]] || { echo "Node generated config include is absent" >&2; exit 1; }
-compile_probe patched "$node_root/deps/openssl/openssl/include" "$config_include" "$node_ssl_archive" "$node_crypto_archive" "$evidence_dir/patched-probe"
+if ! compile_probe "$node_root/deps/openssl/openssl/include" "$config_include" "$node_ssl_archive" "$node_crypto_archive" "$evidence_dir/patched-probe"; then
+  echo "patched probe compilation failed" >&2
+  exit 1
+fi
+if run_probe "$evidence_dir/patched-probe"; then
+  patched_rc=0
+else
+  patched_rc=$?
+fi
+case "$patched_rc" in
+  0)
+    printf '%s\n' 'patched=PASS'
+    ;;
+  1)
+    echo "patched probe failed the fixed capacity contract" >&2
+    exit 1
+    ;;
+  *)
+    echo "patched probe execution failed with exit code ${patched_rc}" >&2
+    exit 1
+    ;;
+esac
 
 guard_source="$node_root/deps/openssl/openssl/ssl/quic/quic_port.c"
 grep -Fqx '#define DEFAULT_MAX_PENDING_CONNS 256' "$guard_source"

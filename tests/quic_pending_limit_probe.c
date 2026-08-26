@@ -37,7 +37,7 @@ int main(void)
         fprintf(stderr, "cannot create QUIC listener\n");
         goto done;
     }
-    if (!SSL_get_feature_request_uint(listener,
+    if (!SSL_get_generic_value_uint(listener,
                                       SSL_VALUE_QUIC_MAX_PENDING_CONNS,
                                       &value)) {
         fprintf(stderr, "pending-connection capacity is unavailable\n");
@@ -48,10 +48,10 @@ int main(void)
                 (unsigned long long)value);
         goto done;
     }
-    if (!SSL_set_feature_request_uint(listener,
+    if (!SSL_set_generic_value_uint(listener,
                                       SSL_VALUE_QUIC_MAX_PENDING_CONNS,
                                       1)
-        || !SSL_get_feature_request_uint(listener,
+        || !SSL_get_generic_value_uint(listener,
                                          SSL_VALUE_QUIC_MAX_PENDING_CONNS,
                                          &value)
         || value != 1) {

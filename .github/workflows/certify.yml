@@ -121,7 +121,7 @@ jobs:
     name: certify-${{ matrix.arch }}
     needs: [policy, headers]
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - arch: amd64
@@ -180,7 +180,13 @@ jobs:
           set -euo pipefail
           export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
           context="$RUNNER_TEMP/builder-context"
-          mkdir -p "$context" "$RUNNER_TEMP/nasm" "$RUNNER_TEMP/runtime"
+          mkdir -p \
+            "$context" \
+            "$RUNNER_TEMP/nasm" \
+            "$RUNNER_TEMP/runtime/evidence"
+          test -d "$RUNNER_TEMP/runtime/evidence"
+          test -w "$RUNNER_TEMP/runtime/evidence"
+          stat -c '%u:%g %a %n' "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime/evidence"
           cp Dockerfile.builder "$context/Dockerfile.builder"
           cp "$RUNNER_TEMP/inputs/libtext-template-perl_1.61-1_all.deb" "$context/"
           docker buildx build --platform '${{ matrix.platform }}' --load \
@@ -201,6 +207,10 @@ jobs:
                 /inputs/openssl.tar.gz /inputs/official.patch \
                 /src/patches/openssl-CVE-2026-14456-node-22.23.2.patch /out
             '
+          test -w "$RUNNER_TEMP/runtime/evidence"
+          runner_write_probe="$RUNNER_TEMP/runtime/evidence/.runner-write-probe"
+          : > "$runner_write_probe"
+          rm -f "$runner_write_probe"
           bash scripts/verify-architecture.sh '${{ matrix.arch }}' "$RUNNER_TEMP/runtime/nodejs/bin/node" "$RUNNER_TEMP/runtime/evidence/RUNTIME_PROVENANCE.json"
           bash scripts/verify-runtime.sh '${{ matrix.arch }}' "$RUNNER_TEMP/runtime"
       - name: Install verified Trivy and retain database identity

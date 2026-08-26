@@ -57,6 +57,20 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "${{ inputs.source_commit }}" origin/main
           [[ "$(git rev-parse HEAD)" = "${{ inputs.source_commit }}" ]]
+      - name: Fail closed if target release tag already exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="refs/tags/${{ inputs.release_tag }}"
+          refs="$(git ls-remote --refs origin "$target")" || {
+            echo "unable to verify target release tag absence" >&2
+            exit 1
+          }
+          if [[ -n "$refs" ]]; then
+            echo "immutable release tag already exists: ${{ inputs.release_tag }}" >&2
+            exit 1
+          fi
+          printf 'EARLY_RELEASE_TAG_ABSENCE_CHECK=PASS\n'
       - name: Download only both named certification artifacts from the exact run
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -82,7 +96,7 @@ jobs:
     name: runtime-image-${{ matrix.arch }}
     needs: validate
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - arch: amd64
@@ -135,7 +149,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          image="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ matrix.arch }}"
+          image="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
           if docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
             echo "immutable architecture tag already exists: $image" >&2
             exit 1
@@ -146,7 +160,7 @@ jobs:
           set -euo pipefail
           export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
           echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          image="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ matrix.arch }}"
+          image="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
           docker buildx build --platform '${{ matrix.platform }}' --load --file Dockerfile.runtime --tag "$image" "$RUNNER_TEMP/runtime"
           bash scripts/verify-runtime-image.sh '${{ matrix.arch }}' "$image"
           bash scripts/install-trivy.sh '${{ matrix.arch }}' BUILD_MANIFEST.json "$RUNNER_TEMP/trivy-bin"
@@ -159,7 +173,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/install-cosign.sh '${{ matrix.arch }}' BUILD_MANIFEST.json "$RUNNER_TEMP/cosign-bin"
-          "$RUNNER_TEMP/cosign-bin/cosign" sign --yes "ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ matrix.arch }}"
+          "$RUNNER_TEMP/cosign-bin/cosign" sign --yes "ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
 
 
   promote:
@@ -221,7 +235,7 @@ jobs:
             exit 1
           fi
           for arch in amd64 arm64; do
-            candidate="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-$arch"
+            candidate="ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ github.run_id }}-${{ github.run_attempt }}-$arch"
             "$RUNNER_TEMP/cosign-bin/cosign" verify \
               --certificate-identity "https://github.com/rojitasnico21-hub/node-openssl-security-runtime/.github/workflows/publish.yml@refs/heads/main" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com "$candidate"

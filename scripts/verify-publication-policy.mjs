@@ -49,7 +49,15 @@ if (!/runtime-image:/.test(publish) || !/needs: \[validate, runtime-image\]/.tes
 if (!/packages: write/.test(publish) || !/id-token: write/.test(publish) || !/attestations: write/.test(publish)) fail("promotion permissions are not scoped to promotion job");
 if (/packages: write|id-token: write|attestations: write/.test(publish.slice(0, publish.indexOf("jobs:")))) fail("promotion permission is global");
 if (!/verify-promotable-package\.sh/.test(publish) || !/refs\/heads\/main/.test(publish)) fail("promotion lacks trusted package/source verification");
-if (!/candidate-\$\{\{ inputs\.certification_run_id \}\}-\$\{\{ matrix\.arch \}\}/.test(publish)) fail("uncertified runtime candidate is not isolated from immutable release tags");
+const runtimeImageStart = publish.indexOf("\n  runtime-image:");
+const promoteStart = publish.indexOf("\n\n  promote:", runtimeImageStart);
+if (runtimeImageStart < 0 || promoteStart < 0) fail("runtime-image publication matrix is absent");
+const runtimeImage = publish.slice(runtimeImageStart, promoteStart);
+if (!/strategy:\n\s+fail-fast: false/.test(runtimeImage)) fail("runtime-image matrix must complete both architectures independently");
+if (!/git ls-remote --refs origin/.test(publish) || !/EARLY_RELEASE_TAG_ABSENCE_CHECK=PASS/.test(publish)) fail("early immutable release-tag absence check is absent");
+if (!/candidate-\$\{\{ inputs\.certification_run_id \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ matrix\.arch \}\}/.test(publish)
+    || !/candidate-\$\{\{ inputs\.certification_run_id \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$arch/.test(publish)) fail("runtime candidates are not isolated by certification, publication run, attempt, and architecture");
+if (/candidate-\$\{\{ inputs\.certification_run_id \}\}-\$\{\{ matrix\.arch \}\}/.test(publish)) fail("legacy certification-only candidate tag remains");
 if (!/install-cosign\.sh/.test(publish) || !/cosign" attest --yes/.test(publish)) fail("signed aggregate provenance is absent");
 if (!/gh release create/.test(publish) || !/AGGREGATE_MANIFEST\.json/.test(publish)) fail("durable release mirror is absent");
 

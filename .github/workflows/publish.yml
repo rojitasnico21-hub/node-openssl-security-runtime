@@ -174,6 +174,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          test -f "$DOCKER_CONFIG/config.json"
           bash scripts/install-cosign.sh '${{ matrix.arch }}' BUILD_MANIFEST.json "$RUNNER_TEMP/cosign-bin"
           "$RUNNER_TEMP/cosign-bin/cosign" sign --yes "ghcr.io/rojitasnico21-hub/node-openssl-security-runtime/node-runtime:candidate-${{ inputs.certification_run_id }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
 

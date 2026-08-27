@@ -64,12 +64,23 @@ const promoteIndexStart = publish.indexOf("      - name: Create and sign immutab
 const promoteReleaseStart = publish.indexOf("      - name: Create immutable public release mirror", promoteIndexStart);
 if (runtimeImagePublishStart < 0 || runtimeImageSignStart < 0 || promoteIndexStart < 0 || promoteReleaseStart < 0) fail("GHCR publication login steps are absent");
 const runtimeImagePublish = publish.slice(runtimeImagePublishStart, runtimeImageSignStart);
+const candidateSignStep = publish.slice(runtimeImageSignStart, promoteStart);
 const promoteIndex = publish.slice(promoteIndexStart, promoteReleaseStart);
 const tokenBinding = /env:\n\s+GITHUB_TOKEN: \$\{\{ github\.token \}\}/;
 const dockerLogin = /echo "\$GITHUB_TOKEN" \| docker login ghcr\.io/;
 if (!tokenBinding.test(runtimeImagePublish) || !dockerLogin.test(runtimeImagePublish)) fail("runtime-image GHCR login lacks an explicit github.token binding");
 if (!tokenBinding.test(promoteIndex) || !dockerLogin.test(promoteIndex)) fail("promote GHCR login lacks an explicit github.token binding");
 if ((publish.match(/echo "\$GITHUB_TOKEN" \| docker login ghcr\.io/g) || []).length !== 2) fail("GHCR login token bindings are incomplete or duplicated");
+const cosignDockerConfigExport = /export DOCKER_CONFIG="\$RUNNER_TEMP\/docker-config"/;
+const cosignDockerConfigCheck = /test -f "\$DOCKER_CONFIG\/config\.json"/;
+const cosignSign = /\$RUNNER_TEMP\/cosign-bin\/cosign" sign --yes/;
+if (!cosignDockerConfigExport.test(candidateSignStep)
+    || !cosignDockerConfigCheck.test(candidateSignStep)
+    || !cosignSign.test(candidateSignStep)) fail("candidate cosign signing lacks the authenticated Docker config binding");
+if (!(candidateSignStep.indexOf('export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"')
+    < candidateSignStep.indexOf('test -f "$DOCKER_CONFIG/config.json"')
+    && candidateSignStep.indexOf('test -f "$DOCKER_CONFIG/config.json"')
+      < candidateSignStep.indexOf('$RUNNER_TEMP/cosign-bin/cosign" sign --yes'))) fail("candidate cosign auth checks are not fail-closed before signing");
 if (!/install-cosign\.sh/.test(publish) || !/cosign" attest --yes/.test(publish)) fail("signed aggregate provenance is absent");
 if (!/gh release create/.test(publish) || !/AGGREGATE_MANIFEST\.json/.test(publish)) fail("durable release mirror is absent");
 

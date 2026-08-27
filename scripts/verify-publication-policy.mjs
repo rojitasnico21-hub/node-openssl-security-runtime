@@ -58,6 +58,18 @@ if (!/git ls-remote --refs origin/.test(publish) || !/EARLY_RELEASE_TAG_ABSENCE_
 if (!/candidate-\$\{\{ inputs\.certification_run_id \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ matrix\.arch \}\}/.test(publish)
     || !/candidate-\$\{\{ inputs\.certification_run_id \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$arch/.test(publish)) fail("runtime candidates are not isolated by certification, publication run, attempt, and architecture");
 if (/candidate-\$\{\{ inputs\.certification_run_id \}\}-\$\{\{ matrix\.arch \}\}/.test(publish)) fail("legacy certification-only candidate tag remains");
+const runtimeImagePublishStart = publish.indexOf("      - name: Build and publish only the verified custom runtime OCI");
+const runtimeImageSignStart = publish.indexOf("      - name: Sign architecture runtime with keyless identity", runtimeImagePublishStart);
+const promoteIndexStart = publish.indexOf("      - name: Create and sign immutable multi-architecture OCI index");
+const promoteReleaseStart = publish.indexOf("      - name: Create immutable public release mirror", promoteIndexStart);
+if (runtimeImagePublishStart < 0 || runtimeImageSignStart < 0 || promoteIndexStart < 0 || promoteReleaseStart < 0) fail("GHCR publication login steps are absent");
+const runtimeImagePublish = publish.slice(runtimeImagePublishStart, runtimeImageSignStart);
+const promoteIndex = publish.slice(promoteIndexStart, promoteReleaseStart);
+const tokenBinding = /env:\n\s+GITHUB_TOKEN: \$\{\{ github\.token \}\}/;
+const dockerLogin = /echo "\$GITHUB_TOKEN" \| docker login ghcr\.io/;
+if (!tokenBinding.test(runtimeImagePublish) || !dockerLogin.test(runtimeImagePublish)) fail("runtime-image GHCR login lacks an explicit github.token binding");
+if (!tokenBinding.test(promoteIndex) || !dockerLogin.test(promoteIndex)) fail("promote GHCR login lacks an explicit github.token binding");
+if ((publish.match(/echo "\$GITHUB_TOKEN" \| docker login ghcr\.io/g) || []).length !== 2) fail("GHCR login token bindings are incomplete or duplicated");
 if (!/install-cosign\.sh/.test(publish) || !/cosign" attest --yes/.test(publish)) fail("signed aggregate provenance is absent");
 if (!/gh release create/.test(publish) || !/AGGREGATE_MANIFEST\.json/.test(publish)) fail("durable release mirror is absent");
 

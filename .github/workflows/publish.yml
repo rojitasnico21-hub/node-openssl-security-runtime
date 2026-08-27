@@ -156,6 +156,8 @@ jobs:
           fi
       - name: Build and publish only the verified custom runtime OCI
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
@@ -223,6 +225,8 @@ jobs:
             "$RUNNER_TEMP/runtime/amd64" "$RUNNER_TEMP/runtime/arm64"
       - name: Create and sign immutable multi-architecture OCI index
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
